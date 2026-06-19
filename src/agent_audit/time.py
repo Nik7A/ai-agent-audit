@@ -16,15 +16,11 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from enum import Enum
 
+# Re-export from schema so callers have one ClockSource, not two.
+from agent_audit.schema.v1 import ClockSource
 
-class ClockSource(str, Enum):
-    """Declared trust level for ts_utc."""
-
-    SYSTEM = "system"
-    NTP = "ntp"
-    TSA = "tsa"
+__all__ = ["ClockSource", "monotonic_ns", "now_utc_rfc3339_ns"]
 
 
 def now_utc_rfc3339_ns() -> str:
