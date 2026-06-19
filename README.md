@@ -8,7 +8,14 @@ Cryptographically-linked records of AI agent tool calls. Forward-compatible foun
 
 ## What this is
 
-A small Python middleware that sits between your AI agent (LangGraph + MCP today; Claude Agent SDK + OpenAI Agents SDK in v0.2) and the tools it calls. Every tool invocation produces a signed, hash-chained JSON record. v0.1 is the foundation; v0.2 adds the trust-boundary hardening (sidecar signer, S3 Object Lock, external anchor) that makes the records acceptable as primary external-audit evidence.
+A small Python library that captures every tool call your AI agent makes, signs it, hash-chains it to the previous record, and writes it to a JSONL log you can verify offline.
+
+Two instrumentation paths in v0.1:
+
+1. **Claude Code hooks** — register `agent-audit hook-record` as a `PostToolUse` hook in `~/.claude/settings.json`. Captures every tool call from `claude` / `claude --bg` / Claude Code subagent dispatches, including all MCP server calls (Asana, mem0, Notion, anything you've wired in).
+2. **LangGraph adapter** — `AuditMiddleware(AgentMiddleware)` plugged into `create_agent`, or `instrument_graph(graph, recorder)` for raw `StateGraph`.
+
+Direct MCP-from-Python (without Claude CLI) lands in v0.2. Claude Agent SDK + OpenAI Agents SDK adapters also land in v0.2. v0.1 is the foundation; v0.2 adds the trust-boundary hardening (sidecar signer, S3 Object Lock, external anchor) that makes the records acceptable as primary external-audit evidence.
 
 ## What this isn't
 
@@ -55,13 +62,54 @@ What v0.1 alone does NOT prove (NON-CLAIMS, repeated in every verify report):
 - The signing key was not compromised → fixed in v0.2 by sidecar signer
 - The wall clock was correct → fixed in v0.2 by RFC 3161 TSA
 
-## Quickstart (LangGraph + MCP)
+## Quickstart — Claude Code (the primary path)
+
+Generate a signing key once:
+
+```bash
+mkdir -p ~/.config/agent-audit
+python -c "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; \
+from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, PublicFormat, NoEncryption; \
+k=Ed25519PrivateKey.generate(); \
+open('$HOME/.config/agent-audit/signing.key','wb').write(k.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())); \
+open('$HOME/.config/agent-audit/signing.pub','wb').write(k.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo))"
+chmod 0600 ~/.config/agent-audit/signing.key
+```
+
+Register the hook in `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "agent-audit hook-record" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+That's it. Every tool call from `claude`, `claude --bg`, and any spawned Claude Code subagents now produces a signed, chained record in `~/.config/agent-audit/audit-YYYY-MM-DD.jsonl`.
+
+Offline verification — anyone with the public key can run:
+
+```bash
+agent-audit verify ~/.config/agent-audit/audit-2026-06-19.jsonl \
+  --pubkey ~/.config/agent-audit/signing.pub
+```
+
+Exits 0 on success and 1 / 2 / 3 / 4 / 5 on specific failure modes (chain break / signature failure / key resolution / malformed / empty). The plain-text report is byte-deterministic so it can go directly into an audit appendix.
+
+## Quickstart — LangGraph (for non-Claude-CLI users)
 
 ```python
-from langgraph.graph import StateGraph
-from agent_audit import AuditRecorder, gate, ungated
-from agent_audit.adapters.langgraph import instrument_graph
-from agent_audit.adapters.mcp import instrument_mcp_client
+from langchain.agents import create_agent
+from agent_audit import AuditRecorder
+from agent_audit.adapters.langgraph import AuditMiddleware
 from agent_audit.sinks.local_file import LocalFileSink
 from agent_audit.keys import load_signing_key
 
@@ -70,20 +118,20 @@ recorder = AuditRecorder(
     signing_key=load_signing_key("~/.config/agent-audit/signing.key"),
 )
 
-graph = StateGraph(...)              # your normal graph
-graph = instrument_graph(graph, recorder)
-
-# also wrap each MCP session
-mcp_session = instrument_mcp_client(mcp_session, recorder)
-
-# every tool call is now recorded
-result = graph.invoke({"input": "..."})
-
-# offline verification anyone can run
-# $ agent-audit verify ./audit/2026-06-19.jsonl --pubkey ~/.config/agent-audit/signing.pub
+agent = create_agent(
+    model="claude-opus-4-7",
+    tools=[...],
+    middleware=[AuditMiddleware(recorder=recorder)],
+)
+# every tool call from the agent is now recorded
 ```
 
-`agent-audit verify` exits 0 on success and 1/2/3/4/5 on specific failure modes (chain break / signature failure / key resolution / malformed / empty). The plain-text report is byte-deterministic so it can go directly into an audit appendix.
+For raw `StateGraph` (without `create_agent`), use the fallback:
+
+```python
+from agent_audit.adapters.langgraph import instrument_graph
+graph = instrument_graph(graph, recorder)
+```
 
 ## Sinks
 
@@ -107,9 +155,9 @@ This library is the foundation I wanted to build before I shipped that conversat
 
 ## Status & roadmap
 
-**v0.1 (now):** middleware works, hash chain works, signing works. LangGraph + MCP. LocalFileSink. CLI verifier. DEV_MODE banner. SCOPE_STATEMENT.
+**v0.1 (now):** Claude Code hooks adapter (PostToolUse). LangGraph adapter (AgentMiddleware + StateGraph fallback). Hash chain, Ed25519 signing, JSONL records. LocalFileSink with manifest. CLI verifier. DEV_MODE banner. SCOPE_STATEMENT.
 
-**v0.2 (next):** sidecar signer process, S3Sink with Object Lock, PostgresSink with role separation, MultiSink, RFC 3161 TSA timestamps, external chain-head anchoring (Git signed commits), Claude Agent SDK adapter, OpenAI Agents SDK adapter, second design partner integrated.
+**v0.2 (next):** sidecar signer process (out-of-process Ed25519), S3Sink with Object Lock COMPLIANCE mode, PostgresSink with role separation, MultiSink fan-out, RFC 3161 TSA timestamps, external chain-head anchoring (Git signed commits or TSA tokens), direct MCP adapter for Python-only users, Claude Agent SDK adapter, OpenAI Agents SDK adapter, Claude Code Stop / SubagentStop event handling (catches tool failures where PostToolUse didn't fire), second design partner integrated.
 
 **Later (when standards stabilize):** prEN 18229-1 export profile, CEN-CENELEC harmonised standards alignment. Tentatively CEN-CENELEC delivery is Q4 2026.
 
