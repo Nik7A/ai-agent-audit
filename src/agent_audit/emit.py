@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import uuid6
+from uuid import uuid7
 
 from agent_audit.integrity import compute_chain_link, sign_record
 from agent_audit.keys import SigningKey
@@ -137,7 +137,7 @@ class AuditRecorder:
             self._chain_id = chain_id
 
         envelope = Envelope(
-            record_id=str(uuid6.uuid7()),
+            record_id=str(uuid7()),
             chain_id=chain_id,
             prev_hash=self._prev_hash,
             key_id=self._signing_key.key_id,

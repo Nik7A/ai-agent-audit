@@ -21,12 +21,12 @@ Designed against LangChain 1.3.x / LangGraph 1.2.x. Older versions without
 
 from __future__ import annotations
 
-import asyncio
 import functools
+import inspect
 import json
 from typing import Any, Callable, TypeVar
 
-import uuid6
+from uuid import uuid7
 
 from agent_audit.emit import AuditRecorder
 from agent_audit.schema.v1 import NoGateReason, Output, ToolCall, ungated
@@ -64,14 +64,14 @@ def audited_tool(
         actual_name: str = tool_name or str(getattr(fn, "__name__", "anonymous_tool"))
         sid = session_id or "langgraph-default"
 
-        if asyncio.iscoroutinefunction(fn):
+        if inspect.iscoroutinefunction(fn):
 
             @functools.wraps(fn)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 result = await fn(*args, **kwargs)
                 await recorder.record(
                     session_id=sid,
-                    step_id=str(uuid6.uuid7()),
+                    step_id=str(uuid7()),
                     tool=ToolCall(name=actual_name),
                     input=_coerce_to_json({"args": args, "kwargs": kwargs}),
                     output=Output(body=_coerce_to_json(result)),
@@ -86,7 +86,7 @@ def audited_tool(
             result = fn(*args, **kwargs)
             recorder.record_sync(
                 session_id=sid,
-                step_id=str(uuid6.uuid7()),
+                step_id=str(uuid7()),
                 tool=ToolCall(name=actual_name),
                 input=_coerce_to_json({"args": args, "kwargs": kwargs}),
                 output=Output(body=_coerce_to_json(result)),
@@ -188,7 +188,7 @@ class AuditMiddleware(_AgentMiddleware):
         name, args = _extract_tool_info(request)
         self._recorder.record_sync(
             session_id=self._session_id,
-            step_id=str(uuid6.uuid7()),
+            step_id=str(uuid7()),
             tool=ToolCall(name=name),
             input=_coerce_to_json(args),
             output=Output(body=_coerce_to_json(_extract_output_body(result))),
@@ -199,7 +199,7 @@ class AuditMiddleware(_AgentMiddleware):
         name, args = _extract_tool_info(request)
         await self._recorder.record(
             session_id=self._session_id,
-            step_id=str(uuid6.uuid7()),
+            step_id=str(uuid7()),
             tool=ToolCall(name=name),
             input=_coerce_to_json(args),
             output=Output(body=_coerce_to_json(_extract_output_body(result))),

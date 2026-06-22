@@ -206,9 +206,9 @@ def emit_from_hook(hook_input: HookInput, config: HookConfig) -> dict[str, Any]:
     # Code doesn't expose a numeric step counter to hooks, so we derive a
     # stable identifier from the tool name + record_id is sufficient for
     # ordering (UUIDv7 is time-sortable).
-    import uuid6
+    from uuid import uuid7
 
-    step_id = str(uuid6.uuid7())
+    step_id = str(uuid7())
 
     return recorder.record_sync(
         session_id=hook_input.session_id,
