@@ -1,5 +1,7 @@
 # ai-agent-audit
 
+*Your AI agent acts on its own. Now you can prove what it did.*
+
 Cryptographically-linked records of AI agent tool calls. Forward-compatible foundation for SOC 2 / ISO 42001 / EU AI Act Article 12 evidence — v0.1 is dogfooding-grade, v0.2 is the regulatory hardening.
 
 **Status:** v0.1 developer preview, currently running on a daemon-driven Claude Code agent system in production. Looking for one design partner. Read the Scope section and the v0.1 limits before opening an issue.
