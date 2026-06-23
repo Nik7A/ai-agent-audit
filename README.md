@@ -2,9 +2,9 @@
 
 *Your AI agent acts on its own. Now you can prove what it did.*
 
-Cryptographically-linked records of AI agent tool calls. Forward-compatible foundation for SOC 2 / ISO 42001 / EU AI Act Article 12 evidence — v0.1 is dogfooding-grade, v0.2 is the regulatory hardening.
+Cryptographically-linked records of AI agent tool calls. A foundation for SOC 2 / ISO 42001 / EU AI Act Article 12 evidence — v0.1 is dogfooding-grade, v0.2 is the regulatory hardening.
 
-**Status:** v0.1 developer preview, currently running on a daemon-driven Claude Code agent system in production. Looking for one design partner. Read the Scope section and the v0.1 limits before opening an issue.
+**Status:** v0.1 developer preview, dogfooded on the author's own daemon-driven Claude Code agent system since 2026-06-22. Read [SCOPE_STATEMENT.md](SCOPE_STATEMENT.md) and the v0.1 limits below before opening an issue.
 
 ---
 
@@ -12,12 +12,12 @@ Cryptographically-linked records of AI agent tool calls. Forward-compatible foun
 
 A small Python library that captures every tool call your AI agent makes, signs it, hash-chains it to the previous record, and writes it to a JSONL log you can verify offline.
 
-Two instrumentation paths in v0.1:
+Two instrumentation paths ship today:
 
 1. **Claude Code hooks** — register `agent-audit hook-record` as a `PostToolUse` hook in `~/.claude/settings.json`. Captures every tool call from `claude` / `claude --bg` / Claude Code subagent dispatches, including all MCP server calls (Asana, mem0, Notion, anything you've wired in).
 2. **LangGraph adapter** — `AuditMiddleware(AgentMiddleware)` plugged into `create_agent`, or `instrument_graph(graph, recorder)` for raw `StateGraph`.
 
-Direct MCP-from-Python (without Claude CLI) lands in v0.2. Claude Agent SDK + OpenAI Agents SDK adapters also land in v0.2. v0.1 is the foundation; v0.2 adds the trust-boundary hardening (sidecar signer, S3 Object Lock, external anchor) that makes the records acceptable as primary external-audit evidence.
+A `@audited_tool` decorator works on any Python callable for custom agents and direct SDK loops. The signing spec lives in [SIGNING.md](SIGNING.md) with one worked test vector so a third-party verifier can be built in any language.
 
 ## What this isn't
 
@@ -28,11 +28,11 @@ Direct MCP-from-Python (without Claude CLI) lands in v0.2. Claude Agent SDK + Op
 
 ## v0.1 — what's honest about it
 
-v0.1 has three known limits that disqualify it as primary external-audit evidence today. They are fixed in v0.2.
+v0.1 has three known limits that disqualify it as primary external-audit evidence today. The fixes are tracked in [ROADMAP.md](ROADMAP.md).
 
-1. **Signing key co-located with the agent process.** A compromised agent can sign forged records. v0.2 ships a sidecar signer that moves the key out of process.
-2. **Writer controls the sink.** LocalFileSink runs in-process with the agent. v0.2 adds S3 Object Lock (COMPLIANCE mode), PostgresSink with role separation, and MultiSink fan-out.
-3. **No external anchor for the chain head.** A forward-only chain detects tampering but not silent removal of the most recent records. v0.2 anchors chain heads via signed Git commits or RFC 3161 TSA.
+1. **Signing key co-located with the agent process.** A compromised agent can sign forged records.
+2. **Writer controls the sink.** LocalFileSink runs in-process with the agent.
+3. **No external anchor for the chain head.** A forward-only chain detects tampering but not silent removal of the most recent records.
 
 The recorder prints a `DEV_MODE` banner to stderr on every startup so this is impossible to forget. The verifier report ends with an explicit NON-CLAIMS block. Read [SCOPE_STATEMENT.md](SCOPE_STATEMENT.md) before staking a compliance claim on v0.1.
 
@@ -48,7 +48,7 @@ The recorder prints a `DEV_MODE` banner to stderr on every startup so this is im
 - Ed25519 signature, with `key_id` and `sig_form_version`
 - Schema version (semver at envelope root) so future evolution doesn't break old chains
 
-Records are JSON Lines. The signing spec lives in [SIGNING.md](SIGNING.md) with one worked test vector so a third-party verifier can be built in any language.
+Records are JSON Lines.
 
 ## Why hash chain + signed timestamp
 
@@ -63,6 +63,23 @@ What v0.1 alone does NOT prove (NON-CLAIMS, repeated in every verify report):
 - Records were not deleted from the head of the chain → fixed in v0.2 by external anchor
 - The signing key was not compromised → fixed in v0.2 by sidecar signer
 - The wall clock was correct → fixed in v0.2 by RFC 3161 TSA
+
+## Supported runtimes
+
+| Runtime | Status | Integration |
+| --- | --- | --- |
+| Any Python callable (custom agents, direct Anthropic / OpenAI SDK loops, in-house frameworks) | Supported | `@audited_tool` decorator |
+| Claude Code CLI | Supported | `PostToolUse` hook |
+| LangChain / LangGraph (1.x) | Supported | `AuditMiddleware` plus `@audited_tool` decorator |
+| OpenAI Agents SDK | Stub planned for v0.2 | Tool-call and handoff event tap; audit-record schema shared with the LangGraph adapter |
+| CrewAI | Stub planned for v0.2 | Crew/Task event hooks via `@audited_tool` on tools |
+| LlamaIndex (Workflows + Agents) | Stub planned for v0.2 | Workflow step events and `@audited_tool` on tools |
+| Claude Agent SDK (Python) | Stub planned for v0.2 | Session and tool-call event tap |
+| Pydantic-AI | Stub planned for v0.2 | Agent run and tool-call hooks |
+| Vercel AI SDK | Not planned | TypeScript-only ecosystem; this library is Python. A separate Node port may be evaluated later. |
+| Mastra | Not planned | TypeScript-only ecosystem; this library is Python. A separate Node port may be evaluated later. |
+| n8n / Make / Zapier | Not planned | Workflow orchestrators, not tool-call runtimes; auditing belongs at the workflow-platform layer rather than inside this library. |
+| AutoGen | Not planned | Microsoft moved AutoGen to maintenance mode in April 2026 and steers new builds to Microsoft Agent Framework. |
 
 ## Quickstart — Claude Code (the primary path)
 
@@ -137,15 +154,11 @@ graph = instrument_graph(graph, recorder)
 
 ## Sinks
 
-**v0.1:**
-- `LocalFileSink` — daily-rotated JSONL with `fsync`/`F_FULLFSYNC`, sidecar `manifest.json`, on-disk WAL for crash recovery
+v0.1 ships `LocalFileSink` — daily-rotated JSONL with `fsync`/`F_FULLFSYNC`, sidecar `manifest.json`, on-disk WAL for crash recovery. Pluggable via the `Sink` protocol — write your own in ~20 lines. Additional sinks (S3 Object Lock, Postgres with role separation, MultiSink fan-out) are tracked in [ROADMAP.md](ROADMAP.md).
 
-**v0.2:**
-- `S3Sink` — S3 Object Lock COMPLIANCE mode + lifecycle to Glacier Deep Archive
-- `PostgresSink` — append-only enforcement via DB-level role separation
-- `MultiSink` — fan-out with required vs best-effort children
+## Performance
 
-Pluggable via the `Sink` protocol — write your own in ~20 lines.
+LocalFileSink sustains ~500 rec/sec with per-record fsync on the reference Hetzner CCX13; the verifier processes ~6.6K rec/sec, so a 6-month chain verifies in roughly 25 minutes. Methodology, full numbers, and the network-attached-storage caveat are in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Why this exists
 
@@ -155,26 +168,13 @@ EU AI Act Article 12 requires automatic event logging for high-risk AI systems. 
 
 This library is the foundation I wanted to build before I shipped that conversation. v0.1 is honest about its scope. v0.2 is what closes the production gap.
 
-## Status & roadmap
+## Roadmap and design partner
 
-**v0.1 (now):** Claude Code hooks adapter (PostToolUse). LangGraph adapter (AgentMiddleware + StateGraph fallback). Hash chain, Ed25519 signing, JSONL records. LocalFileSink with manifest. CLI verifier. DEV_MODE banner. SCOPE_STATEMENT.
+Full v0.2 plan, the Auditor Pack tooling track, and what's explicitly out of scope are in [ROADMAP.md](ROADMAP.md).
 
-**v0.2 (next):** sidecar signer process (out-of-process Ed25519), S3Sink with Object Lock COMPLIANCE mode, PostgresSink with role separation, MultiSink fan-out, RFC 3161 TSA timestamps, external chain-head anchoring (Git signed commits or TSA tokens), direct MCP adapter for Python-only users, Claude Agent SDK adapter, OpenAI Agents SDK adapter, Claude Code Stop / SubagentStop event handling (catches tool failures where PostToolUse didn't fire), second design partner integrated.
+One design-partner slot is open. The fit: AI startup (seed–Series A), building on LangGraph / Claude Agent SDK / OpenAI Agents / MCP, selling into a regulated B2B buyer (fintech, healthtech, legaltech, automotive AI safety, German Mittelstand) with a SOC 2 audit in progress or on the horizon where AI is in scope. In exchange for early integration help and steering the record format, you get v1.0 designed around your real audit conversation — and the consulting time to integrate it. Open an issue with `[design-partner]` in the title, or email.
 
-**Later (when standards stabilize):** prEN 18229-1 export profile, CEN-CENELEC harmonised standards alignment. Tentatively CEN-CENELEC delivery is Q4 2026.
-
-**Not on roadmap:** dashboards, alerting, eval, model governance, training data lineage. Use a real observability tool for those. ai-agent-audit covers one control area on purpose.
-
-## Looking for ONE design partner before v0.2
-
-I'm not selling anything yet. I want to talk to one team:
-
-- AI startup, seed–Series A
-- Building on LangGraph / Claude Agent SDK / OpenAI Agents / MCP
-- Selling into a regulated B2B buyer (fintech, healthtech, legaltech, automotive AI safety, German Mittelstand)
-- SOC 2 audit in progress or on the horizon where AI is in scope
-
-In exchange for early integration help and steering the record format, you get v1.0 designed around your real audit conversation — and the consulting time to integrate it. Open an issue with `[design-partner]` in the title, or email.
+Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Author
 
