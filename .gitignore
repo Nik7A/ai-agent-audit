@@ -50,3 +50,11 @@ Thumbs.db
 audit-*.jsonl
 manifest.json
 test-output/
+
+# Local bench output (artifacts of a run, not the suite)
+bench-*.txt
+bench-*.json
+bench-fingerprint.txt
+
+# In-flight drafts (review-only, not for the public repo)
+_drafts/
