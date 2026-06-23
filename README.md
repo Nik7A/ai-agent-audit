@@ -12,11 +12,12 @@ Cryptographically-linked records of AI agent tool calls. A foundation for SOC 2 
 
 A small Python library that captures every tool call your AI agent makes, signs it, hash-chains it to the previous record, and writes it to a JSONL log you can verify offline.
 
-Three instrumentation paths ship today:
+Four instrumentation paths ship today:
 
 1. **Claude Code hooks** — register `agent-audit hook-record` as a `PostToolUse` hook in `~/.claude/settings.json`. Captures every tool call from `claude` / `claude --bg` / Claude Code subagent dispatches, including all MCP server calls (Asana, mem0, Notion, anything you've wired in).
 2. **LangGraph adapter** — `AuditMiddleware(AgentMiddleware)` plugged into `create_agent`, or `instrument_graph(graph, recorder)` for raw `StateGraph`.
 3. **OpenAI Agents SDK adapter** — `AuditHooks(RunHooks)` passed to `Runner.run(..., hooks=...)`. Records every local tool call the SDK dispatches during the run.
+4. **Claude Agent SDK adapter** — `AuditHook` registered as a `PostToolUse` callback in `ClaudeAgentOptions.hooks`. The SDK supplies `session_id` and `tool_use_id` natively.
 
 A `@audited_tool` decorator works on any Python callable for custom agents and direct SDK loops. The signing spec lives in [SIGNING.md](SIGNING.md) with one worked test vector so a third-party verifier can be built in any language.
 
@@ -75,7 +76,7 @@ What v0.1 alone does NOT prove (NON-CLAIMS, repeated in every verify report):
 | OpenAI Agents SDK | Supported | `AuditHooks(RunHooks)` plus `@audited_tool` decorator |
 | CrewAI | Stub planned for v0.2 | Crew/Task event hooks via `@audited_tool` on tools |
 | LlamaIndex (Workflows + Agents) | Stub planned for v0.2 | Workflow step events and `@audited_tool` on tools |
-| Claude Agent SDK (Python) | Stub planned for v0.2 | Session and tool-call event tap |
+| Claude Agent SDK (Python) | Supported | `AuditHook` as `PostToolUse` callback in `ClaudeAgentOptions.hooks` |
 | Pydantic-AI | Stub planned for v0.2 | Agent run and tool-call hooks |
 | Vercel AI SDK | Not planned | TypeScript-only ecosystem; this library is Python. A separate Node port may be evaluated later. |
 | Mastra | Not planned | TypeScript-only ecosystem; this library is Python. A separate Node port may be evaluated later. |

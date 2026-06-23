@@ -1,6 +1,6 @@
 [project]
 name = "agent-audit"
-version = "0.1.1"
+version = "0.1.2"
 description = "Cryptographically-linked records of AI agent tool calls. Forward-compatible foundation for SOC 2 / ISO 42001 / EU AI Act Article 12 evidence."
 authors = [
     { name = "Nikolay Semernya", email = "nsemernia@gmail.com" }
@@ -29,6 +29,7 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
+    "claude-agent-sdk>=0.2.107",
     "hypothesis>=6.130",
     "langchain>=1.3",
     "langgraph>=1.2",

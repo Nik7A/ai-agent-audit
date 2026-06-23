@@ -25,6 +25,7 @@ Adapters:
 - Claude Code CLI (`PostToolUse` hook)
 - LangChain / LangGraph 1.x (`AuditMiddleware` plus `@audited_tool` decorator on any callable)
 - OpenAI Agents SDK (`AuditHooks(RunHooks)` passed to `Runner.run`) — shipped in v0.1.1
+- Claude Agent SDK Python (`AuditHook` registered in `ClaudeAgentOptions.hooks`) — shipped in v0.1.2
 
 Known weaknesses of v0.1, each closed or explicitly deferred in v0.2:
 
@@ -51,7 +52,7 @@ v0.2 will publish a fresh benchmark in [`BENCHMARKS.md`](BENCHMARKS.md) showing 
 
 **OpenAI Agents SDK** — **shipped in v0.1.1** (ahead of the original v0.2 plan) as `AuditHooks(RunHooks)`. Picked for runtime adoption and overlap with the regulated-buyer accounts most likely to ask for an audit trail (Klarna in consumer credit, Coinbase in regulated crypto custody, Box in enterprise content). The SDK's tool-call lifecycle will gain `outcome`-field coverage alongside the LangGraph adapter when the `Stop` / `SubagentStop` work lands.
 
-**CrewAI, LlamaIndex, Claude Agent SDK (Python), Pydantic-AI** — stubs only, gated on design-partner demand. Each is a single-file adapter against the existing source contract; we will not ship them speculatively.
+**CrewAI, LlamaIndex, Pydantic-AI** — stubs only, gated on design-partner demand. Each is a single-file adapter against the existing source contract; we will not ship them speculatively.
 
 ### Tooling
 
