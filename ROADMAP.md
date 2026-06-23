@@ -1,0 +1,89 @@
+# Roadmap
+
+What's shipped, what's next, what we won't build. Updated 2026-06-23.
+
+## Status
+
+v0.1 is a developer preview. Dogfooded in production on the author's own `cc-fleet-pane` daemon since 2026-06-22; no external production users yet. Looking for one design partner — a Python AI team in a regulated domain (fintech, healthcare, automotive supply chain, or EU AI Act Annex III) with a SOC 2 Type II or ISO 27001 program active or being scoped. This is not a 1.0 commitment-level project. The library produces evidence; it does not produce attestations.
+
+Measured performance baseline: see [`BENCHMARKS.md`](BENCHMARKS.md).
+
+## v0.1 (current)
+
+Shipped:
+
+- Per-tool-call signed JSONL records, one file per UTC day (`audit-YYYY-MM-DD.jsonl`)
+- RFC 8785 JCS canonicalization, SHA-256 digest, Ed25519 signature per record
+- Hash-chained records: `prev_hash` = SHA-256 of the prior record's canonical-for-chain-link bytes
+- `LocalFileSink` with atomic manifest write (tmp + fsync + rename + fsync dir), `F_FULLFSYNC` on macOS, `ENOSPC` raises typed `DiskFullError`
+- Pydantic v2 schema, `extra="forbid"`, discriminated `PolicyContext` union (`Gate` | `Ungated`)
+- CLI: `verify`, `inspect`, `pubkey-fingerprint`, `hook-record`, stable exit codes 0-5
+- Python 3.14, stdlib `uuid.uuid7()`, 134 tests under `mypy --strict` and `ruff`
+
+Adapters:
+
+- Claude Code CLI (`PostToolUse` hook)
+- LangChain / LangGraph 1.x (`AuditMiddleware` plus `@audited_tool` decorator on any callable)
+
+Known weaknesses of v0.1, each closed or explicitly deferred in v0.2:
+
+- Records only successful tool calls; failed calls, stops, and sub-agent stops are dropped
+- `LocalFileSink` is the only destination; no built-in path to WORM storage
+- Verification is on-demand via the CLI; no daemon re-verifies the chain on a schedule
+- One Ed25519 signing key per process; no rotation, no per-tenant keys, no HSM
+
+## v0.2 (next)
+
+### Hardening
+
+**S3Sink with Object Lock in COMPLIANCE mode.** v0.1 writes to local disk, which an operator can edit. v0.2 adds a customer-owned destination the operator cannot edit. The library writes; the bucket enforces. Retention windows are set in the customer's bucket policy to match their obligation — HIPAA 164.316(b)(2) at six years, SOC 2 Type II at the audit window (~13 months), EU AI Act Article 12 at six months or longer. Writes happen out of band from the agent's tool-call return path. Region outages and credential rotation degrade to the local sink and replay on recovery.
+
+**Verifier sidecar.** A ~200-line Kubernetes `CronJob` that nightly re-verifies every signature, walks the hash chain end-to-end, anchors the resulting root hash to a signed Git tag and an optional RFC 3161 TSA, and emits one signed daily attestation ingestible by Vanta, Drata, Sprinto, or Auditboard. This is the artifact a SOC 2 CC7.2 reviewer or an EU AI Act Article 12 inspector reads to confirm the record set has not been altered since it was written. The sidecar ships as a separate deliverable on purpose: an audit source that owns its own verifier cannot claim non-repudiation. Verification time scales linearly with chain length; the v0.1 baseline is in [`BENCHMARKS.md`](BENCHMARKS.md).
+
+**`Stop` and `SubagentStop` event coverage.** v0.1 records only successful tool calls. v0.2 writes records for failures, timeouts, policy denials, and agent stops, with a typed `outcome` field and identical signature and chain semantics. Closes the evidence-completeness gap relevant to ISO 27001 A.8.15 (logging) and SOC 2 CC7.2 (detection of anomalies); a log that omits failed actions cannot support either.
+
+**Schema-field alignment with prEN 18229-1, gated on ratification.** The draft European standard for AI system logging is in public-enquiry phase as of June 2026. The schema is forward-compatible today; alignment lands behind a `sig_form_version` bump once the text stabilizes, not before.
+
+v0.2 will publish a fresh benchmark in [`BENCHMARKS.md`](BENCHMARKS.md) showing the delta from the v0.1 baseline on the same reference hardware. Out of scope for v0.2 (explicit): key rotation, per-tenant key isolation, HSM integration. These wait for a design partner with a concrete threat model.
+
+### Adapters
+
+**OpenAI Agents SDK** — primary v0.2 adapter. Picked for runtime adoption and overlap with the regulated-buyer accounts most likely to ask for an audit trail (Klarna in consumer credit, Coinbase in regulated crypto custody, Box in enterprise content). Same surface as the LangChain adapter: middleware plus `@audited_tool`, with the SDK's tool-call lifecycle mapped onto the v0.2 `outcome` field.
+
+**CrewAI, LlamaIndex, Claude Agent SDK (Python), Pydantic-AI** — stubs only, gated on design-partner demand. Each is a single-file adapter against the existing source contract; we will not ship them speculatively.
+
+### Tooling
+
+**Auditor Pack.** A reproducible tarball: signed records, manifest, public key fingerprint, and the chain-verification CLI as a single static binary. Runnable by an external auditor with no Python environment and no access to the customer's repository. Output is a one-page report listing record count, chain status, signature validity, and key fingerprint. Supports SOC 2 walkthrough and ISO 27001 Stage 2 evidence requests.
+
+## Beyond v0.2
+
+Plausible, not committed:
+
+- Schema migration framework for `sig_form_version` bumps, so a record signed under v1 stays verifiable after the schema changes
+- Node port as a separate package (Vercel AI SDK, Mastra) once Python ecosystem coverage is solid and the TS supply-chain situation stabilizes
+- Microsoft Agent Framework 1.0 adapter once production-user signals appear
+
+## Not planned
+
+- **PII / PHI redaction.** Must happen upstream of the audit boundary. A regex pass inside this library is best-effort and would create a HIPAA 164.502 exposure rather than mitigate one.
+- **Adverse-action reason codes / model explainability.** The library records what the agent did, not why it decided. FCRA-style obligations are model governance, not logging.
+- **GDPR Article 30 ROPA generation.** ROPA is a DPO artifact. The records support Art 5(2) accountability and Art 32 security of processing.
+- **Replacement for LangSmith, Langfuse, Helicone, or Datadog LLM Observability.** Those tools answer "is the agent behaving well." This library answers "can we prove what the agent did six months from now to an auditor." Run both.
+- **Native chain verification inside Splunk, Datadog, or Elastic.** SIEM ingestion of the JSONL is straightforward; cryptographic verification is the sidecar's job.
+- **Retention enforcement inside the library.** WORM storage enforces retention. A library that could shorten retention is not an audit library.
+- **Monitoring, alerting, review workflow.** Bring your own Datadog and PagerDuty.
+- **Bundled remote sink.** A source library that owns the destination cannot claim non-repudiation. Destinations are customer infrastructure.
+- **Certification under any ratified standard** (SOC 2, ISO 42001, EU AI Act, HIPAA, DORA). Certification is performed by an accredited auditor against the full control environment.
+- **US bank model risk management coverage.** Federal Reserve SR 26-2 and OCC 2026-13 explicitly exclude agentic AI from MRM scope as of their 2026 revisions.
+- **Vercel AI SDK adapter.** TypeScript-only runtime; waits on the Node port.
+- **AutoGen adapter.** Maintenance mode since April 2026; users are steered to Microsoft Agent Framework.
+- **Mastra adapter.** TypeScript-only, plus the June 2026 npm supply-chain incident has not settled.
+
+## How to influence this roadmap
+
+One design-partner slot is open for v0.2. Terms: scoped per partner, weighted toward co-development rather than a vendor relationship. Your production failure modes set the v0.2 hardening priorities; your name stays off the page unless you opt in. Reach out — cadence and commercial terms get figured out together. Fit: a Python AI team in a regulated domain with a SOC 2 Type II or ISO 27001 program active or being scoped.
+
+For everyone else: open an issue at `github.com/Nik7A/ai-agent-audit`. Adapter requests should include the runtime, your record volume, and the obligation driving the ask.
+
+Contact: Nikolai Semernia, `nsemernia@gmail.com`.
