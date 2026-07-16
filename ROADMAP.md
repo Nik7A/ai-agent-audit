@@ -88,4 +88,4 @@ One design-partner slot is open for v0.2. Terms: scoped per partner, weighted to
 
 For everyone else: open an issue at `github.com/Nik7A/ai-agent-audit`. Adapter requests should include the runtime, your record volume, and the obligation driving the ask.
 
-Contact: Nikolai Semernia, `nsemernia@gmail.com`.
+Contact: [Nikolai Semernia on LinkedIn](https://www.linkedin.com/in/nikolai-semernia).

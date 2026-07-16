@@ -182,7 +182,7 @@ Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 By **Nikolai Semernia**. Built this because I wanted compliance-grade audit logs for my own autonomous agent system, and the existing observability tools weren't designed for that. Previously led an engineering org through ISO 27001 + TISAX certification — that's where I learned what auditors actually want to see.
 
-[LinkedIn](https://www.linkedin.com/in/nikolai-semernia) · [Email](mailto:nsemernia@gmail.com)
+[LinkedIn](https://www.linkedin.com/in/nikolai-semernia)
 
 ## License
 

@@ -28,4 +28,4 @@ Adapter requests should include the runtime name, your expected record volume, a
 
 ## Contact
 
-Maintainer: Nikolai Semernia (`nsemernia@gmail.com`).
+Maintainer: Nikolai Semernia. Open an issue at `github.com/Nik7A/ai-agent-audit`.
