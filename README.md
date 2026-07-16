@@ -294,7 +294,7 @@ This library is the foundation I wanted to build before I shipped that conversat
 
 ## Roadmap and design partner
 
-Full v0.2 plan, the Auditor Pack tooling track, and what's explicitly out of scope are in [ROADMAP.md](ROADMAP.md).
+Full v0.3 plan, the Auditor Pack tooling track, and what's explicitly out of scope are in [ROADMAP.md](ROADMAP.md).
 
 One design-partner slot is open. The fit: AI startup (seed–Series A), building on LangGraph / Claude Agent SDK / OpenAI Agents / MCP, selling into a regulated B2B buyer (fintech, healthtech, legaltech, automotive AI safety, German Mittelstand) with a SOC 2 audit in progress or on the horizon where AI is in scope. In exchange for early integration help and steering the record format, you get v1.0 designed around your real audit conversation — and the consulting time to integrate it. Open an issue with `[design-partner]` in the title, or email.
 

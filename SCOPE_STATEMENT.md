@@ -8,7 +8,7 @@ This is the contract with anyone who reads the README, opens an issue, or consid
 
 ## What chiplog IS
 
-A Python library that captures **cryptographically-linked records of every tool call** an AI agent makes (LangGraph, MCP — Claude Agent SDK / OpenAI Agents SDK adapters land in v0.2).
+A Python library that captures **cryptographically-linked records of the tool calls** an AI agent makes (LangGraph, MCP, Claude Code, Claude Agent SDK, OpenAI Agents SDK).
 
 Each record contains: tool identity, MCP server info, input args (PII-redacted), output (capped + hashed), policy decision context, signed timestamp, hash chain link to the previous record, Ed25519 signature.
 
@@ -16,13 +16,13 @@ Records are JSON Lines. They're verifiable offline with a CLI that anyone — in
 
 ## What chiplog IS NOT (and won't claim to be in v0.1)
 
-### NOT a regulatory-grade evidence system (v0.2 target)
+### NOT a regulatory-grade evidence system (v0.3 target)
 
 v0.1 limitations that disqualify it from "tamper-evident evidence" in the strict sense:
 
-1. **Signing key co-located with the agent process.** A compromised agent can sign forged records. Real auditor pushback: "your auditor will ask for separation of duties between the producer of evidence and the keeper of the signing key." v0.2 ships the **sidecar signer** that fixes this.
-2. **Writer controls the sink.** LocalFileSink runs in the same process as the agent. Real auditor pushback: "logs co-located with the system they monitor can be silently deleted." v0.2 ships **S3 Object Lock COMPLIANCE mode** sink, **PostgresSink with role separation** (the writer role lacks `UPDATE`/`DELETE` at the DB layer), and **external chain-head anchoring** (signed Git commits or RFC 3161 TSA tokens to a third-party authority).
-3. **No anti-deletion proof for head/tail.** A single forward-only hash chain detects tampering but not silent removal of the most recent records. Real auditor pushback: "how do you prove records aren't being deleted as your agent runs?" v0.2 adds the **external anchor** that makes head deletion detectable.
+1. **Signing key co-located with the agent process.** A compromised agent can sign forged records. Real auditor pushback: "your auditor will ask for separation of duties between the producer of evidence and the keeper of the signing key." v0.3 ships the **sidecar signer** that fixes this.
+2. **Writer controls the sink.** LocalFileSink runs in the same process as the agent. Real auditor pushback: "logs co-located with the system they monitor can be silently deleted." v0.3 ships **S3 Object Lock COMPLIANCE mode** sink, **PostgresSink with role separation** (the writer role lacks `UPDATE`/`DELETE` at the DB layer), and **external chain-head anchoring** (signed Git commits or RFC 3161 TSA tokens to a third-party authority).
+3. **No anti-deletion proof for head/tail.** A single forward-only hash chain detects tampering but not silent removal of the most recent records. Real auditor pushback: "how do you prove records aren't being deleted as your agent runs?" v0.3 adds the **external anchor** that makes head deletion detectable.
 
 Until those three land, the honest framing is **"cryptographically-linked records"** — useful for engineering investigation and internal review, **not** acceptable as primary evidence to an external SOC 2 / ISO 42001 / EU AI Act auditor.
 
@@ -161,4 +161,4 @@ Before shipping the README, ask:
 2. Could a customer integrate chiplog and then claim EU AI Act Article 12 compliance? **If yes, the README is wrong.**
 3. Could a customer use chiplog's logs as primary evidence in an external audit today (v0.1)? **If yes — only if they also have sidecar signer, S3 Object Lock, and external anchor running. v0.1 alone doesn't ship those. Say so.**
 
-The right framing is: **"chiplog provides one component of the evidence pipeline. It is forward-compatible with regulatory-grade evidence; v0.1 is the foundation, v0.2 adds the production hardening."**
+The right framing is: **"chiplog provides one component of the evidence pipeline. It is forward-compatible with regulatory-grade evidence; what ships today is the foundation, and v0.3 adds the production hardening."**

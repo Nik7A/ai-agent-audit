@@ -1,10 +1,10 @@
 # Roadmap
 
-What's shipped, what's next, what we won't build. Updated 2026-07-14.
+What's shipped, what's next, what we won't build. Updated 2026-07-16.
 
 ## Status
 
-v0.1 is a developer preview with no external users.
+v0.2 is the current release. It is a developer preview with no external users.
 
 It was dogfooded against the author's own `cc-fleet-pane` daemon from 2026-06-22 to 2026-07-01: 19,037 signed records, chain intact, `verify` exit 0. What that run does **not** show is more informative than what it does. The hook was registered for `PostToolUse` only, so it recorded 7,022 tool calls and **zero failures** — a valid, verifiable, chain-intact log with no failures in it, which is exactly the "it looks like it is working" failure this library warns about in `README.md`. Recording then stopped on 2026-07-01 without anyone noticing, because the daemon's sessions moved to a profile whose config did not carry the hook. **A log that silently stops is indistinguishable from an agent that did nothing.** That is the strongest argument for the verifier sidecar below, and it is why an audit trail needs a liveness signal rather than only an integrity one.
 
@@ -12,7 +12,7 @@ Looking for one design partner — a Python AI team in a regulated domain (finte
 
 Measured performance baseline: see [`BENCHMARKS.md`](BENCHMARKS.md).
 
-## v0.1 (current)
+## v0.1
 
 Shipped:
 
@@ -31,22 +31,28 @@ Adapters:
 - OpenAI Agents SDK (`@audited_tool` on the tool callable; `AuditHooks(RunHooks)` passed to `Runner.run` records `unobserved`) — shipped in v0.1.1
 - Claude Agent SDK Python (`AuditHook` registered under both `PostToolUse` and `PostToolUseFailure` in `ClaudeAgentOptions.hooks`) — shipped in v0.1.2
 
-Known weaknesses of v0.1, each closed or explicitly deferred in v0.2:
+Known weaknesses of v0.1. v0.2 closed none of them; each is carried into v0.3 below or explicitly deferred:
 
 - Lifecycle events (`Stop`, `SubagentStop`) are not recorded; only tool calls are
 - `LocalFileSink` is the only destination; no built-in path to WORM storage
 - Verification is on-demand via the CLI; no daemon re-verifies the chain on a schedule
 - One Ed25519 signing key per process; no rotation, no per-tenant keys, no HSM
 
-## v0.2 (next)
+## v0.2 (current, shipped 2026-07-16)
+
+Two things landed, and neither is a hardening item. v0.2 is an honesty release: it made the log say what the recorder actually knows, and it measured the cost of doing so. The three limits that disqualify the library as primary audit evidence are untouched and carried into v0.3.
+
+**Tool-call outcomes.** Every record now carries a typed `outcome` (`success` | `error` | `timeout` | `denied` | `unobserved`) with identical signature and chain semantics. `schema_version` moves to v1.2; `sig_form_version` stays v1.0, so records written under v1.0 remain verifiable unchanged. Narrows the evidence-completeness gap relevant to ISO 27001 A.8.15 (logging) and SOC 2 CC7.2 (detection of anomalies): a log that omits failed actions cannot support either. It closes that gap for the adapters whose runtime exposes outcomes, and states the limit where the runtime does not — `AuditHooks` can only write `unobserved`, neither hook-based adapter has a native timeout signal, and a Bash call the runtime backgrounds on timeout is recorded `unobserved` rather than guessed at by both hook-based adapters (Claude Code CLI and Claude Agent SDK, which share one implementation of that rule). What each adapter can actually observe — and where it says `unobserved` rather than guess — is documented in the README.
+
+**Fresh benchmark**, in [`BENCHMARKS.md`](BENCHMARKS.md), with one honest deviation from what was originally promised here. The plan said "the delta from the v0.1 baseline on the same reference hardware"; the Hetzner CCX13 reference run was not performed. Rather than compare v0.2-on-a-dev-box against the published v0.1-on-Hetzner figures — which would measure the machine rather than the release — the v0.1 baseline was re-measured on the v0.2 machine, and the delta is drawn same-machine-vs-same-machine. The Hetzner v0.1 table is retained as historical and no v0.2 number is claimed for it. The delta is published including the regression it found (v0.2 costs 21–45 % more CPU per record, payload-dependent; mostly masked on an `fsync`-bound sink), and including the fact that one recorder does not scale with concurrency now that the commit section is serialised.
+
+## v0.3 (next)
 
 ### Hardening
 
-**S3Sink with Object Lock in COMPLIANCE mode.** v0.1 writes to local disk, which an operator can edit. v0.2 adds a customer-owned destination the operator cannot edit. The library writes; the bucket enforces. Retention windows are set in the customer's bucket policy to match their obligation — HIPAA 164.316(b)(2) at six years, SOC 2 Type II at the audit window (~13 months), EU AI Act Article 12 at six months or longer. Writes happen out of band from the agent's tool-call return path. Region outages and credential rotation degrade to the local sink and replay on recovery.
+**S3Sink with Object Lock in COMPLIANCE mode.** v0.1 writes to local disk, which an operator can edit. v0.3 adds a customer-owned destination the operator cannot edit. The library writes; the bucket enforces. Retention windows are set in the customer's bucket policy to match their obligation — HIPAA 164.316(b)(2) at six years, SOC 2 Type II at the audit window (~13 months), EU AI Act Article 12 at six months or longer. Writes happen out of band from the agent's tool-call return path. Region outages and credential rotation degrade to the local sink and replay on recovery.
 
 **Verifier sidecar.** A ~200-line Kubernetes `CronJob` that nightly re-verifies every signature, walks the hash chain end-to-end, anchors the resulting root hash to a signed Git tag and an optional RFC 3161 TSA, and emits one signed daily attestation ingestible by Vanta, Drata, Sprinto, or Auditboard. This is the artifact a SOC 2 CC7.2 reviewer or an EU AI Act Article 12 inspector reads to confirm the record set has not been altered since it was written. The sidecar ships as a separate deliverable on purpose: an audit source that owns its own verifier cannot claim non-repudiation. Verification time scales linearly with chain length; the v0.1 baseline is in [`BENCHMARKS.md`](BENCHMARKS.md).
-
-**Tool-call outcomes — shipped in v0.2.** Every record now carries a typed `outcome` (`success` | `error` | `timeout` | `denied` | `unobserved`) with identical signature and chain semantics. `schema_version` moves to v1.2; `sig_form_version` stays v1.0, so records written under v1.0 remain verifiable unchanged. Narrows the evidence-completeness gap relevant to ISO 27001 A.8.15 (logging) and SOC 2 CC7.2 (detection of anomalies): a log that omits failed actions cannot support either. It closes that gap for the adapters whose runtime exposes outcomes, and states the limit where the runtime does not — `AuditHooks` can only write `unobserved`, neither hook-based adapter has a native timeout signal, and a Bash call the runtime backgrounds on timeout is recorded `unobserved` rather than guessed at by both hook-based adapters (Claude Code CLI and Claude Agent SDK, which share one implementation of that rule). What each adapter can actually observe — and where it says `unobserved` rather than guess — is documented in the README.
 
 **`Stop` and `SubagentStop` event coverage.** Still open. Lifecycle events carry no tool call, so they do not fit the current record shape (`payload.tool`, `payload.input`, and `payload.output` are all required). This needs its own schema slice.
 
@@ -54,7 +60,7 @@ Known weaknesses of v0.1, each closed or explicitly deferred in v0.2:
 
 **Schema-field alignment with prEN 18229-1, gated on ratification.** The draft European standard for AI system logging is in public-enquiry phase as of June 2026. The schema is forward-compatible today; alignment lands behind a `sig_form_version` bump once the text stabilizes, not before.
 
-**Fresh benchmark — shipped in v0.2**, in [`BENCHMARKS.md`](BENCHMARKS.md), with one honest deviation from what was promised here. The plan said "the delta from the v0.1 baseline on the same reference hardware"; the Hetzner CCX13 reference run was not performed for v0.2. Rather than compare v0.2-on-a-dev-box against the published v0.1-on-Hetzner figures — which would measure the machine rather than the release — the v0.1 baseline was re-measured on the v0.2 machine, and the delta is drawn same-machine-vs-same-machine. The Hetzner v0.1 table is retained as historical and no v0.2 number is claimed for it. The delta is published including the regression it found (v0.2 costs 21–45 % more CPU per record, payload-dependent; mostly masked on an `fsync`-bound sink), and including the fact that one recorder does not scale with concurrency now that the commit section is serialised. Out of scope for v0.2 (explicit): key rotation, per-tenant key isolation, HSM integration. These wait for a design partner with a concrete threat model.
+**Out of scope for v0.3** (explicit): key rotation, per-tenant key isolation, HSM integration. These wait for a design partner with a concrete threat model.
 
 ### Adapters
 
@@ -66,7 +72,7 @@ Known weaknesses of v0.1, each closed or explicitly deferred in v0.2:
 
 **Auditor Pack.** A reproducible tarball: signed records, manifest, public key fingerprint, and the chain-verification CLI as a single static binary. Runnable by an external auditor with no Python environment and no access to the customer's repository. Output is a one-page report listing record count, chain status, signature validity, and key fingerprint. Supports SOC 2 walkthrough and ISO 27001 Stage 2 evidence requests.
 
-## Beyond v0.2
+## Beyond v0.3
 
 Plausible, not committed:
 
@@ -92,7 +98,7 @@ Plausible, not committed:
 
 ## How to influence this roadmap
 
-One design-partner slot is open for v0.2. Terms: scoped per partner, weighted toward co-development rather than a vendor relationship. Your production failure modes set the v0.2 hardening priorities; your name stays off the page unless you opt in. Reach out — cadence and commercial terms get figured out together. Fit: a Python AI team in a regulated domain with a SOC 2 Type II or ISO 27001 program active or being scoped.
+One design-partner slot is open for v0.3. Terms: scoped per partner, weighted toward co-development rather than a vendor relationship. Your production failure modes set the v0.2 hardening priorities; your name stays off the page unless you opt in. Reach out — cadence and commercial terms get figured out together. Fit: a Python AI team in a regulated domain with a SOC 2 Type II or ISO 27001 program active or being scoped.
 
 For everyone else: open an issue at `github.com/Nik7A/chiplog`. Adapter requests should include the runtime, your record volume, and the obligation driving the ask.
 

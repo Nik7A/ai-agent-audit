@@ -149,7 +149,7 @@ This is the v0.1 NON-CLAIMS block, repeated in every verifier report:
 
 - It does **not** prove that records were not deleted from the head (tail) of the chain. A single forward-only hash chain detects in-the-middle removal but not unattested truncation at the end. v0.2 closes this with external anchor.
 - It does **not** prove that the signing key was not compromised. A holder of the private key can produce a valid alternative log. v0.2 closes this with the sidecar signer (key out of the agent's trust boundary).
-- It does **not** prove that the wall clock (`ts_utc`) was correct. The `ts_source` field declares the trust level (`system` / `ntp` / `tsa`); v0.2 adds RFC 3161 TSA timestamps for true time anchoring.
+- It does **not** prove that the wall clock (`ts_utc`) was correct. The `ts_source` field declares the trust level (`system` / `ntp` / `tsa`); v0.3 adds RFC 3161 TSA timestamps for true time anchoring.
 
 Note what chain verification also does not prove: that `outcome` is **true**. The signature attests that the recorder wrote that outcome; it says nothing about whether the recorder was right. Outcome honesty is not a cryptographic property — it is a property of the adapters, and it is governed by the invariant in section 7.2.
 

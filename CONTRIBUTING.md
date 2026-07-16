@@ -26,7 +26,7 @@ Force-pushes to `main` and branch deletion are blocked.
 
 ## What's in scope
 
-[`ROADMAP.md`](ROADMAP.md) lists v0.2 plans and what's explicitly out of scope. For substantive changes, please open an issue first to discuss direction before writing code.
+[`ROADMAP.md`](ROADMAP.md) lists v0.3 plans and what's explicitly out of scope. For substantive changes, please open an issue first to discuss direction before writing code.
 
 Adapter requests should include the runtime name, your expected record volume, and the regulatory or operational obligation driving the ask.
 
