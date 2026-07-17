@@ -21,10 +21,19 @@ DiskFullError is raised on `ENOSPC` — the agent halts loudly rather than
 silently dropping. v0.1 has no buffering: each write either fully persists
 or raises.
 
-The manifest is NOT load-bearing for chain integrity (the JSONL files are
-the source of truth). It exists so the Claude Code hook handler — which
-runs as a fresh process per tool call — can recover the chain head without
-walking every JSONL file on every invocation.
+The manifest is an ATTESTATION, not a cache. `verify_tree` cross-checks it
+against the log and reports MANIFEST_INTEGRITY — "an integrity break, never a
+pass" — when they disagree: `files[].sha256` anchors the file's bytes, and the
+per-chain `record_count` anchors the canonical tally against an injected or
+duplicated record. The JSONL files remain the source of chain truth, and the
+manifest is not signed, so its anchor value is bounded by the known limit that
+the writer controls the sink (see README).
+
+Per record the sink appends ONE line to `manifest.journal` (chain head + file
+digest, stated as resulting state) and fsyncs it. `manifest.json` is a checkpoint,
+rewritten only on compaction and on construction-time key declaration. Reading is
+checkpoint + replay. This is why the manifest is not rewritten per record; it used
+to be, which made a write O(every chain ever recorded).
 """
 
 from __future__ import annotations

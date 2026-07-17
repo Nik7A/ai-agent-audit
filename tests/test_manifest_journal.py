@@ -249,3 +249,41 @@ async def test_journal_is_compacted_at_the_threshold(tmp_path: Path) -> None:
     assert Manifest.load_or_create(d / "manifest.json").chains["c1"].record_count == (
         COMPACTION_THRESHOLD_LINES + 1
     )
+
+
+async def test_verify_tree_verdict_is_unchanged_by_the_journal(tmp_path: Path) -> None:
+    # The load-bearing property. If the state reconstructed from checkpoint +
+    # journal equals what the full-rewrite path held, every existing verifier
+    # test keeps its meaning.
+    from chiplog.verify import ChainCheckOutcome, verify_tree
+
+    d = tmp_path / "audit"
+    sk = _mkkey()
+    sink = LocalFileSink(dir=d, pubkey_pem=sk.public_key.public_bytes(
+        Encoding.PEM, PublicFormat.SubjectPublicKeyInfo))
+    rec = AuditRecorder(sink=sink, signing_key=sk, chain_id="c1")
+    await _emit(rec, 5)
+
+    r = verify_tree(d)  # journal still present, checkpoint stale
+    assert r.outcome == ChainCheckOutcome.OK
+    assert r.verified_records == 5
+
+    await sink.close()  # compacted, journal gone
+    r2 = verify_tree(d)
+    assert r2.outcome == ChainCheckOutcome.OK
+    assert r2.verified_records == 5
+
+
+def test_the_sink_docstring_does_not_call_the_manifest_a_cache() -> None:
+    # verify.py: disagreement with the log is "an integrity break, never a pass".
+    # The module docstring said the manifest is "NOT load-bearing for chain
+    # integrity" and exists only so the hook can recover the head. Both cannot be
+    # true, and the design work turned on which one is.
+    from chiplog.sinks import local_file
+
+    doc = local_file.__doc__ or ""
+    assert "NOT load-bearing for chain integrity" not in doc
+    assert "attest" in doc.lower(), (
+        "the manifest is an attestation: verify_tree reports MANIFEST_INTEGRITY "
+        "when it disagrees with the log. Say so where the sink describes it."
+    )
