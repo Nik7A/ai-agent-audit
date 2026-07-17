@@ -23,35 +23,15 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
-import os
-import platform
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from chiplog.integrity import compute_chain_link
+from chiplog.journal import _fsync_fd
 from chiplog.manifest import ChainState, FileChecksum, Manifest
 from chiplog.sinks.base import DiskFullError, SinkError
-
-_F_FULLFSYNC = 51  # macOS-specific fcntl constant
-
-
-def _fsync_fd(fd: int) -> None:
-    """Best-effort F_FULLFSYNC on macOS, regular fsync elsewhere.
-
-    Default fsync on Darwin only flushes to disk write cache, not the actual
-    platter — F_FULLFSYNC blocks until the data is durably on disk.
-    """
-    if platform.system() == "Darwin":
-        try:
-            import fcntl
-
-            fcntl.fcntl(fd, _F_FULLFSYNC)
-            return
-        except (OSError, AttributeError):
-            pass
-    os.fsync(fd)
 
 
 class _DailyFileState:

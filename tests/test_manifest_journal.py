@@ -11,6 +11,11 @@ That is safe only because a line states the result rather than a delta.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
+from chiplog.journal import JournalCorruptError, append_entry, replay
 from chiplog.manifest import JournalEntry, Manifest, RedactionState
 
 
@@ -61,3 +66,37 @@ def test_replaying_an_older_line_after_a_newer_one_cannot_unlatch_redaction() ->
 def test_roundtrips_through_json() -> None:
     e = _entry()
     assert JournalEntry.from_dict(e.to_dict()) == e
+
+
+def test_append_then_replay_returns_entries_in_order(tmp_path: Path) -> None:
+    p = tmp_path / "manifest.journal"
+    append_entry(p, _entry(head_hash="h1"))
+    append_entry(p, _entry(head_hash="h2"))
+    assert [e.head_hash for e in replay(p)] == ["h1", "h2"]
+
+
+def test_replay_of_a_missing_journal_is_empty(tmp_path: Path) -> None:
+    assert replay(tmp_path / "manifest.journal") == []
+
+
+def test_torn_trailing_line_is_ignored(tmp_path: Path) -> None:
+    # Only a crash mid-append produces this. The record it described is either
+    # absent from the JSONL or lands in the pre-existing lag window; either way
+    # the honest move is to drop the half-written attestation.
+    p = tmp_path / "manifest.journal"
+    append_entry(p, _entry(head_hash="h1"))
+    with p.open("a", encoding="utf-8") as f:
+        f.write('{"chain_id": "c1", "head_ha')
+    assert [e.head_hash for e in replay(p)] == ["h1"]
+
+
+def test_corrupt_line_in_the_middle_raises(tmp_path: Path) -> None:
+    # Skipping this would silently drop an attestation — the exact failure this
+    # library exists to prevent. It must be loud.
+    p = tmp_path / "manifest.journal"
+    append_entry(p, _entry(head_hash="h1"))
+    with p.open("a", encoding="utf-8") as f:
+        f.write("{ not json\n")
+    append_entry(p, _entry(head_hash="h3"))
+    with pytest.raises(JournalCorruptError):
+        replay(p)
