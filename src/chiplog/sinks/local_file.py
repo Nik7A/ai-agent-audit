@@ -339,7 +339,7 @@ class LocalFileSink:
             file_sha256=fc.sha256,
             file_record_count=fc.record_count,
             file_first_record_id=fc.first_record_id,
-            redaction_disabled=self._manifest.redaction_disabled,
+            redaction_state=self._manifest.redaction_state.value,
         )
 
     def _compact(self) -> None:

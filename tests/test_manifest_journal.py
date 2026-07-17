@@ -37,7 +37,7 @@ def _entry(**over: object) -> JournalEntry:
         file_sha256="s1",
         file_record_count=1,
         file_first_record_id="r1",
-        redaction_disabled=False,
+        redaction_state="unknown",
     )
     base.update(over)
     return JournalEntry(**base)  # type: ignore[arg-type]
@@ -64,8 +64,39 @@ def test_apply_is_idempotent() -> None:
 
 def test_replaying_an_older_line_after_a_newer_one_cannot_unlatch_redaction() -> None:
     m = Manifest()
-    m.apply_journal_entry(_entry(redaction_disabled=True))
-    m.apply_journal_entry(_entry(redaction_disabled=False))
+    m.apply_journal_entry(_entry(redaction_state="disabled"))
+    m.apply_journal_entry(_entry(redaction_state="unknown"))
+    assert m.redaction_state is RedactionState.DISABLED
+
+
+def test_replaying_all_unknown_entries_stays_unknown() -> None:
+    # The equivalence gap this fix closes: a directory where nobody ever
+    # attested a redaction state must read UNKNOWN after journal replay, not
+    # the affirmative "enabled" the old bool-latching path produced.
+    m = Manifest()
+    m.apply_journal_entry(_entry(redaction_state="unknown"))
+    m.apply_journal_entry(_entry(redaction_state="unknown"))
+    assert m.redaction_state is RedactionState.UNKNOWN
+
+
+def test_apply_entry_carrying_disabled_yields_disabled() -> None:
+    m = Manifest()
+    m.apply_journal_entry(_entry(redaction_state="disabled"))
+    assert m.redaction_state is RedactionState.DISABLED
+
+
+def test_apply_entry_carrying_enabled_yields_enabled() -> None:
+    m = Manifest()
+    m.apply_journal_entry(_entry(redaction_state="enabled"))
+    assert m.redaction_state is RedactionState.ENABLED
+
+
+def test_replaying_disabled_then_unknown_stays_disabled() -> None:
+    # Reorder-safety: the fold keeps the MORE severe state seen, so replaying
+    # a less-severe entry after a more-severe one must not regress it.
+    m = Manifest()
+    m.apply_journal_entry(_entry(redaction_state="disabled"))
+    m.apply_journal_entry(_entry(redaction_state="unknown"))
     assert m.redaction_state is RedactionState.DISABLED
 
 

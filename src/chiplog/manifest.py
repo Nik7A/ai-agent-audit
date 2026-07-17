@@ -5,9 +5,11 @@ Tracks per-chain head state and per-file SHA-256 checksums so a verifier
 doesn't have to re-walk every JSONL file to know where to resume.
 
 Important: the manifest is NOT the source of chain truth. The JSONL files
-are. v0.1 trusts the manifest because the LocalFileSink updates it atomically
-on every write. v0.2 will add a "rebuild manifest from JSONL" recovery path
-for the case where the manifest is deleted, corrupted, or out-of-sync.
+are. v0.1 trusts the manifest because the LocalFileSink appends a journal
+entry per record and checkpoints manifest.json on compaction, so the pair
+always reconstructs to the same state a per-write rewrite would have held.
+v0.2 will add a "rebuild manifest from JSONL" recovery path for the case
+where the manifest is deleted, corrupted, or out-of-sync.
 """
 
 from __future__ import annotations
@@ -69,6 +71,20 @@ class RedactionState(str, Enum):
         return RedactionState.ENABLED
 
 
+# Severity ranking for RedactionState, used to fold journal entries
+# monotonically on replay (see Manifest.apply_journal_entry): UNKNOWN <
+# ENABLED < DISABLED. A replayed entry can only move the state up this
+# ranking, never down — which is what makes replay both "last wins" (entries
+# are written in non-decreasing severity, since the sink's state only
+# latches upward) and reorder-safe (replaying an older, less-severe entry
+# after a newer one cannot regress it).
+_REDACTION_SEVERITY: dict[RedactionState, int] = {
+    RedactionState.UNKNOWN: 0,
+    RedactionState.ENABLED: 1,
+    RedactionState.DISABLED: 2,
+}
+
+
 @dataclass
 class ChainState:
     """Per-chain head state.
@@ -116,7 +132,7 @@ class JournalEntry:
     file_sha256: str
     file_record_count: int
     file_first_record_id: str | None
-    redaction_disabled: bool
+    redaction_state: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -173,7 +189,16 @@ class Manifest:
         self.redaction_state = self.redaction_state.latch(observed_disabled)
 
     def apply_journal_entry(self, entry: JournalEntry) -> None:
-        """Fold one journal entry into this manifest. Idempotent."""
+        """Fold one journal entry into this manifest. Idempotent.
+
+        `redaction_state` is folded by severity, not assigned and not routed
+        through `note_redaction_disabled` (that takes a bool and is what
+        caused the bug this guards against: replaying an UNKNOWN-attesting
+        entry through a bool would latch to ENABLED, asserting redaction was
+        on where nothing was ever attested). Keeping the MORE severe of the
+        current state and the entry's state gives both "last wins" and
+        reorder-safety — see `_REDACTION_SEVERITY`.
+        """
         self.chains[entry.chain_id] = ChainState(
             chain_id=entry.chain_id,
             head_hash=entry.head_hash,
@@ -188,7 +213,11 @@ class Manifest:
             first_record_id=entry.file_first_record_id,
             last_record_id=entry.last_record_id,
         )
-        self.note_redaction_disabled(entry.redaction_disabled)
+        self.redaction_state = max(
+            self.redaction_state,
+            RedactionState(entry.redaction_state),
+            key=_REDACTION_SEVERITY.__getitem__,
+        )
 
     def declare_pubkey(self, pem: str) -> str:
         """Record a public key as having signed here. Returns its key_id.
