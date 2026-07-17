@@ -23,6 +23,12 @@ from chiplog.sinks.base import SinkError
 
 _F_FULLFSYNC = 51  # macOS-specific fcntl constant
 
+# Not a knob. No caller has a reason to tune it, and a knob here is a way to
+# silently disable compaction. Replay is linear and a thousand small lines costs
+# nothing; the number exists only so a long-lived process cannot grow the journal
+# without bound.
+COMPACTION_THRESHOLD_LINES = 1000
+
 
 class JournalCorruptError(SinkError):
     """A journal line that is neither valid nor a torn tail."""
@@ -79,4 +85,4 @@ def replay(path: Path) -> list[JournalEntry]:
     return out
 
 
-__all__ = ["JournalCorruptError", "append_entry", "replay"]
+__all__ = ["COMPACTION_THRESHOLD_LINES", "JournalCorruptError", "append_entry", "replay"]

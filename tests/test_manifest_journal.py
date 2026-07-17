@@ -18,7 +18,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from chiplog.emit import AuditRecorder
-from chiplog.journal import JournalCorruptError, append_entry, replay
+from chiplog.journal import COMPACTION_THRESHOLD_LINES, JournalCorruptError, append_entry, replay
 from chiplog.keys import SigningKey, compute_key_id
 from chiplog.manifest import MANIFEST_SCHEMA_VERSION, JournalEntry, Manifest, RedactionState
 from chiplog.schema.v1 import NoGateReason, Output, ToolCall, success, ungated
@@ -204,3 +204,48 @@ async def test_each_record_appends_one_journal_line(tmp_path: Path) -> None:
     rec = AuditRecorder(sink=sink, signing_key=sk, chain_id="c1")
     await _emit(rec, 4)
     assert len(replay(d / "manifest.journal")) == 4
+
+
+async def test_close_compacts_the_journal_away(tmp_path: Path) -> None:
+    d = tmp_path / "audit"
+    sk = _mkkey()
+    sink = LocalFileSink(dir=d, pubkey_pem=sk.public_key.public_bytes(
+        Encoding.PEM, PublicFormat.SubjectPublicKeyInfo))
+    rec = AuditRecorder(sink=sink, signing_key=sk, chain_id="c1")
+    await _emit(rec, 3)
+    await sink.close()
+    assert not (d / "manifest.journal").exists()
+    m = Manifest.load_or_create(d / "manifest.json")
+    assert m.chains["c1"].record_count == 3, "the checkpoint must carry what the journal held"
+
+
+async def test_replay_after_a_crash_between_checkpoint_and_truncate_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    # Compaction writes the checkpoint, fsyncs, THEN drops the journal. A crash
+    # in between leaves both. Replaying stale lines onto a newer checkpoint must
+    # be a no-op — that is the whole reason entries state results, not deltas.
+    d = tmp_path / "audit"
+    sk = _mkkey()
+    sink = LocalFileSink(dir=d, pubkey_pem=sk.public_key.public_bytes(
+        Encoding.PEM, PublicFormat.SubjectPublicKeyInfo))
+    rec = AuditRecorder(sink=sink, signing_key=sk, chain_id="c1")
+    await _emit(rec, 3)
+    before = Manifest.load_or_create(d / "manifest.json")
+    sink._manifest.save_atomic(d / "manifest.json")  # checkpoint written, crash here
+    after = Manifest.load_or_create(d / "manifest.json")  # journal still present
+    assert after.chains["c1"].record_count == before.chains["c1"].record_count
+    assert after.files == before.files
+
+
+async def test_journal_is_compacted_at_the_threshold(tmp_path: Path) -> None:
+    d = tmp_path / "audit"
+    sk = _mkkey()
+    sink = LocalFileSink(dir=d, pubkey_pem=sk.public_key.public_bytes(
+        Encoding.PEM, PublicFormat.SubjectPublicKeyInfo))
+    rec = AuditRecorder(sink=sink, signing_key=sk, chain_id="c1")
+    await _emit(rec, COMPACTION_THRESHOLD_LINES + 1)
+    assert len(replay(d / "manifest.journal")) <= 1
+    assert Manifest.load_or_create(d / "manifest.json").chains["c1"].record_count == (
+        COMPACTION_THRESHOLD_LINES + 1
+    )
