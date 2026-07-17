@@ -89,6 +89,36 @@ class FileChecksum:
     last_record_id: str | None = None
 
 
+@dataclass(frozen=True)
+class JournalEntry:
+    """One record's effect on the manifest, stated as RESULTING state.
+
+    Not a delta. Replay applies entries in order and the last one wins, which is
+    what makes it idempotent — and idempotence is what makes the compaction crash
+    window safe (see the design spec). An entry that said "+1" would double-count
+    on replay.
+    """
+
+    chain_id: str
+    genesis_hash: str | None
+    first_record_id: str | None
+    head_hash: str | None
+    last_record_id: str | None
+    record_count: int
+    file: str
+    file_sha256: str
+    file_record_count: int
+    file_first_record_id: str | None
+    redaction_disabled: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> JournalEntry:
+        return cls(**data)
+
+
 @dataclass
 class Manifest:
     """Persistent state for LocalFileSink."""
@@ -134,6 +164,24 @@ class Manifest:
     def note_redaction_disabled(self, observed_disabled: bool) -> None:
         """Fold one record's observed redaction state into the latch."""
         self.redaction_state = self.redaction_state.latch(observed_disabled)
+
+    def apply_journal_entry(self, entry: JournalEntry) -> None:
+        """Fold one journal entry into this manifest. Idempotent."""
+        self.chains[entry.chain_id] = ChainState(
+            chain_id=entry.chain_id,
+            head_hash=entry.head_hash,
+            genesis_hash=entry.genesis_hash,
+            record_count=entry.record_count,
+            first_record_id=entry.first_record_id,
+            last_record_id=entry.last_record_id,
+        )
+        self.files[entry.file] = FileChecksum(
+            sha256=entry.file_sha256,
+            record_count=entry.file_record_count,
+            first_record_id=entry.file_first_record_id,
+            last_record_id=entry.last_record_id,
+        )
+        self.note_redaction_disabled(entry.redaction_disabled)
 
     def declare_pubkey(self, pem: str) -> str:
         """Record a public key as having signed here. Returns its key_id.
@@ -294,6 +342,7 @@ __all__ = [
     "MANIFEST_SCHEMA_VERSION",
     "ChainState",
     "FileChecksum",
+    "JournalEntry",
     "Manifest",
     "RedactionState",
 ]
