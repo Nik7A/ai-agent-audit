@@ -4,7 +4,16 @@ Each write:
   1. Append the JSON-encoded record + newline to today's `audit-YYYY-MM-DD.jsonl`.
   2. fsync (F_FULLFSYNC on macOS for true platter durability).
   3. Update in-memory manifest: chain head, file checksum, pubkey info.
-  4. Atomically write the manifest to `manifest.json`.
+  4. Append the resulting state as one line to `manifest.journal` + fsync.
+
+`manifest.json` is a checkpoint, written at construction (or when
+`declare_pubkey`/redaction state changes) — never rewritten per record.
+Readers call `Manifest.load_or_create`, which replays the journal over the
+checkpoint to reconstruct current state.
+
+The journal is compacted — checkpoint written, then journal dropped — every
+`COMPACTION_THRESHOLD_LINES` lines and on `close()`, so a long-lived process
+cannot grow it without bound and a cleanly-closed directory carries none.
 
 Rolling SHA-256 per daily file avoids O(N²) re-hashing on large logs.
 
@@ -12,10 +21,19 @@ DiskFullError is raised on `ENOSPC` — the agent halts loudly rather than
 silently dropping. v0.1 has no buffering: each write either fully persists
 or raises.
 
-The manifest is NOT load-bearing for chain integrity (the JSONL files are
-the source of truth). It exists so the Claude Code hook handler — which
-runs as a fresh process per tool call — can recover the chain head without
-walking every JSONL file on every invocation.
+The manifest is an ATTESTATION, not a cache. `verify_tree` cross-checks it
+against the log and reports MANIFEST_INTEGRITY — "an integrity break, never a
+pass" — when they disagree: `files[].sha256` anchors the file's bytes, and the
+per-chain `record_count` anchors the canonical tally against an injected or
+duplicated record. The JSONL files remain the source of chain truth, and the
+manifest is not signed, so its anchor value is bounded by the known limit that
+the writer controls the sink (see README).
+
+Per record the sink appends ONE line to `manifest.journal` (chain head + file
+digest, stated as resulting state) and fsyncs it. `manifest.json` is a checkpoint,
+rewritten only on compaction and on construction-time key declaration. Reading is
+checkpoint + replay. This is why the manifest is not rewritten per record; it used
+to be, which made a write O(every chain ever recorded).
 """
 
 from __future__ import annotations
@@ -23,35 +41,21 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
-import os
-import platform
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from chiplog.integrity import compute_chain_link
-from chiplog.manifest import ChainState, FileChecksum, Manifest
+from chiplog.journal import COMPACTION_THRESHOLD_LINES, _fsync_fd, append_entry, replay
+from chiplog.manifest import (
+    JOURNAL_FILENAME,
+    ChainState,
+    FileChecksum,
+    JournalEntry,
+    Manifest,
+)
 from chiplog.sinks.base import DiskFullError, SinkError
-
-_F_FULLFSYNC = 51  # macOS-specific fcntl constant
-
-
-def _fsync_fd(fd: int) -> None:
-    """Best-effort F_FULLFSYNC on macOS, regular fsync elsewhere.
-
-    Default fsync on Darwin only flushes to disk write cache, not the actual
-    platter — F_FULLFSYNC blocks until the data is durably on disk.
-    """
-    if platform.system() == "Darwin":
-        try:
-            import fcntl
-
-            fcntl.fcntl(fd, _F_FULLFSYNC)
-            return
-        except (OSError, AttributeError):
-            pass
-    os.fsync(fd)
 
 
 class _DailyFileState:
@@ -134,8 +138,14 @@ class LocalFileSink:
         self.dir.mkdir(parents=True, exist_ok=True)
 
         self._manifest_path = self.dir / "manifest.json"
+        self._journal_path = self.dir / JOURNAL_FILENAME
         self._manifest = Manifest.load_or_create(self._manifest_path)
         self._manifest_dirty = False
+
+        # A fresh process (the Claude Code hook runs one per tool call) must not
+        # restart the count at zero, or the journal grows unbounded across
+        # invocations. Seed from what is already on disk.
+        self._journal_lines = len(replay(self._journal_path))
 
         if pubkey_pem is not None:
             pem_str = (
@@ -251,20 +261,24 @@ class LocalFileSink:
 
             daily.append_line(line.encode("utf-8"))
 
-            self._update_manifest_in_memory(record, filename, daily.sha256())
+            entry = self._update_manifest_in_memory(record, filename, daily.sha256())
 
             try:
-                self._manifest.save_atomic(self._manifest_path)
+                append_entry(self._journal_path, entry)
             except OSError as e:
                 if e.errno == errno.ENOSPC:
                     raise DiskFullError(
-                        "out of disk space writing manifest"
+                        "out of disk space writing manifest journal"
                     ) from e
-                raise SinkError(f"failed to flush manifest: {e}") from e
+                raise SinkError(f"failed to append to manifest journal: {e}") from e
+
+            self._journal_lines += 1
+            if self._journal_lines >= COMPACTION_THRESHOLD_LINES:
+                self._compact()
 
     def _update_manifest_in_memory(
         self, record: dict[str, Any], filename: str, file_sha256: str
-    ) -> None:
+    ) -> JournalEntry:
         env = record["envelope"]
         chain_id = env["chain_id"]
         record_id = env["record_id"]
@@ -312,12 +326,43 @@ class LocalFileSink:
         if self._manifest.pubkey_id is None:
             self._manifest.pubkey_id = env["key_id"]
 
+        chain = self._manifest.chains[chain_id]
+        fc = self._manifest.files[filename]
+        return JournalEntry(
+            chain_id=chain_id,
+            genesis_hash=chain.genesis_hash,
+            first_record_id=chain.first_record_id,
+            head_hash=chain.head_hash,
+            last_record_id=chain.last_record_id,
+            record_count=chain.record_count,
+            file=filename,
+            file_sha256=fc.sha256,
+            file_record_count=fc.record_count,
+            file_first_record_id=fc.first_record_id,
+            redaction_state=self._manifest.redaction_state.value,
+        )
+
+    def _compact(self) -> None:
+        """Checkpoint the in-memory state, then drop the journal.
+
+        Order is load-bearing. The checkpoint is written and fsynced FIRST; only
+        then is the journal removed. A crash between the two leaves both, and
+        replay folds stale entries onto a newer checkpoint — a no-op, because
+        entries state results rather than deltas. The reverse order would lose
+        every attestation the journal still held.
+        """
+        self._manifest.save_atomic(self._manifest_path)
+        self._journal_path.unlink(missing_ok=True)
+        self._journal_lines = 0
+
     async def flush(self) -> None:
         # Per-write fsync already gives us "all records are durable on disk
         # by the time write() returns" — flush is a no-op for v0.1.
         return
 
     async def close(self) -> None:
+        with self._write_lock:
+            self._compact()
         self._closed = True
 
 

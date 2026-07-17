@@ -5,9 +5,11 @@ Tracks per-chain head state and per-file SHA-256 checksums so a verifier
 doesn't have to re-walk every JSONL file to know where to resume.
 
 Important: the manifest is NOT the source of chain truth. The JSONL files
-are. v0.1 trusts the manifest because the LocalFileSink updates it atomically
-on every write. v0.2 will add a "rebuild manifest from JSONL" recovery path
-for the case where the manifest is deleted, corrupted, or out-of-sync.
+are. v0.1 trusts the manifest because the LocalFileSink appends a journal
+entry per record and checkpoints manifest.json on compaction, so the pair
+always reconstructs to the same state a per-write rewrite would have held.
+v0.2 will add a "rebuild manifest from JSONL" recovery path for the case
+where the manifest is deleted, corrupted, or out-of-sync.
 """
 
 from __future__ import annotations
@@ -22,7 +24,14 @@ from typing import Any
 
 from chiplog.keys import load_public_key_from_pem
 
-MANIFEST_SCHEMA_VERSION = "manifest.v1.0"
+MANIFEST_SCHEMA_VERSION = "manifest.v2.0"
+
+# v1.0 predates the journal: its checkpoint IS the state, so it is read as
+# written. v2.0 is checkpoint + journal. Reading both is required — a bump that
+# orphans manifests in the field is not acceptable (see the pubkeys change).
+SUPPORTED_MANIFEST_SCHEMA_VERSIONS = frozenset({"manifest.v1.0", MANIFEST_SCHEMA_VERSION})
+
+JOURNAL_FILENAME = "manifest.journal"
 
 
 class RedactionState(str, Enum):
@@ -62,6 +71,20 @@ class RedactionState(str, Enum):
         return RedactionState.ENABLED
 
 
+# Severity ranking for RedactionState, used to fold journal entries
+# monotonically on replay (see Manifest.apply_journal_entry): UNKNOWN <
+# ENABLED < DISABLED. A replayed entry can only move the state up this
+# ranking, never down — which is what makes replay both "last wins" (entries
+# are written in non-decreasing severity, since the sink's state only
+# latches upward) and reorder-safe (replaying an older, less-severe entry
+# after a newer one cannot regress it).
+_REDACTION_SEVERITY: dict[RedactionState, int] = {
+    RedactionState.UNKNOWN: 0,
+    RedactionState.ENABLED: 1,
+    RedactionState.DISABLED: 2,
+}
+
+
 @dataclass
 class ChainState:
     """Per-chain head state.
@@ -87,6 +110,36 @@ class FileChecksum:
     record_count: int = 0
     first_record_id: str | None = None
     last_record_id: str | None = None
+
+
+@dataclass(frozen=True)
+class JournalEntry:
+    """One record's effect on the manifest, stated as RESULTING state.
+
+    Not a delta. Replay applies entries in order and the last one wins, which is
+    what makes it idempotent — and idempotence is what makes the compaction crash
+    window safe (see the design spec). An entry that said "+1" would double-count
+    on replay.
+    """
+
+    chain_id: str
+    genesis_hash: str | None
+    first_record_id: str | None
+    head_hash: str | None
+    last_record_id: str | None
+    record_count: int
+    file: str
+    file_sha256: str
+    file_record_count: int
+    file_first_record_id: str | None
+    redaction_state: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> JournalEntry:
+        return cls(**data)
 
 
 @dataclass
@@ -135,6 +188,37 @@ class Manifest:
         """Fold one record's observed redaction state into the latch."""
         self.redaction_state = self.redaction_state.latch(observed_disabled)
 
+    def apply_journal_entry(self, entry: JournalEntry) -> None:
+        """Fold one journal entry into this manifest. Idempotent.
+
+        `redaction_state` is folded by severity, not assigned and not routed
+        through `note_redaction_disabled` (that takes a bool and is what
+        caused the bug this guards against: replaying an UNKNOWN-attesting
+        entry through a bool would latch to ENABLED, asserting redaction was
+        on where nothing was ever attested). Keeping the MORE severe of the
+        current state and the entry's state gives both "last wins" and
+        reorder-safety — see `_REDACTION_SEVERITY`.
+        """
+        self.chains[entry.chain_id] = ChainState(
+            chain_id=entry.chain_id,
+            head_hash=entry.head_hash,
+            genesis_hash=entry.genesis_hash,
+            record_count=entry.record_count,
+            first_record_id=entry.first_record_id,
+            last_record_id=entry.last_record_id,
+        )
+        self.files[entry.file] = FileChecksum(
+            sha256=entry.file_sha256,
+            record_count=entry.file_record_count,
+            first_record_id=entry.file_first_record_id,
+            last_record_id=entry.last_record_id,
+        )
+        self.redaction_state = max(
+            self.redaction_state,
+            RedactionState(entry.redaction_state),
+            key=_REDACTION_SEVERITY.__getitem__,
+        )
+
     def declare_pubkey(self, pem: str) -> str:
         """Record a public key as having signed here. Returns its key_id.
 
@@ -163,10 +247,10 @@ class Manifest:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Manifest:
         schema_version = data.get("schema_version", MANIFEST_SCHEMA_VERSION)
-        if schema_version != MANIFEST_SCHEMA_VERSION:
+        if schema_version not in SUPPORTED_MANIFEST_SCHEMA_VERSIONS:
             raise ValueError(
                 f"unsupported manifest schema_version {schema_version!r}; "
-                f"this build supports {MANIFEST_SCHEMA_VERSION!r}"
+                f"this build supports {sorted(SUPPORTED_MANIFEST_SCHEMA_VERSIONS)}"
             )
         # Migrate a manifest written before `pubkeys` existed: its single
         # `pubkey_pem` is a key that really did sign here, so it belongs in the
@@ -222,7 +306,16 @@ class Manifest:
 
     @classmethod
     def load_or_create(cls, path: Path) -> Manifest:
-        """Load from disk if it exists; otherwise return a fresh instance."""
+        """Load from disk if it exists; otherwise return a fresh instance.
+
+        Whatever the checkpoint's version, the sibling `manifest.journal` is
+        replayed on top: a v2.0 checkpoint's heads lag by up to a compaction
+        interval, so replay brings it current. A v1.0 checkpoint predates the
+        journal, so in practice no journal file exists next to it and replay
+        is a no-op — its heads are the state, exactly as written.
+        """
+        from chiplog.journal import replay  # local import: journal imports manifest
+
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
@@ -232,8 +325,13 @@ class Manifest:
                     "Delete the manifest and re-run if you intentionally want "
                     "a fresh chain — but be aware this loses chain continuity."
                 ) from e
-            return cls.from_dict(data)
-        return cls()
+            manifest = cls.from_dict(data)
+        else:
+            manifest = cls()
+
+        for entry in replay(path.parent / JOURNAL_FILENAME):
+            manifest.apply_journal_entry(entry)
+        return manifest
 
     def save_atomic(self, path: Path) -> None:
         """Write manifest atomically: write a private temp file, fsync, rename.
@@ -259,6 +357,10 @@ class Manifest:
         so the last one to land is the newest. What is no longer possible is a
         torn manifest or a spurious failure.
         """
+        # Writing a checkpoint is what upgrades a directory to v2: a manifest
+        # loaded as v1.0 (no journal, heads authoritative as written) becomes
+        # v2.0 the moment it is next persisted.
+        self.schema_version = MANIFEST_SCHEMA_VERSION
         text = json.dumps(self.to_dict(), indent=2, sort_keys=True)
 
         fd, tmp_name = tempfile.mkstemp(
@@ -291,9 +393,12 @@ class Manifest:
 
 
 __all__ = [
+    "JOURNAL_FILENAME",
     "MANIFEST_SCHEMA_VERSION",
+    "SUPPORTED_MANIFEST_SCHEMA_VERSIONS",
     "ChainState",
     "FileChecksum",
+    "JournalEntry",
     "Manifest",
     "RedactionState",
 ]
